@@ -12,9 +12,31 @@ npm run build
 
 A pasta de saida sera `dist/`.
 
-## Deploy no Cloudflare Pages
+## Deploy no Cloudflare (Workers Assets)
 
-Use estas configuracoes no projeto Pages:
+1. Login no Cloudflare:
+
+```bash
+npx wrangler login
+```
+
+2. Build + preview local pelo runtime do Cloudflare:
+
+```bash
+npm run preview:cf
+```
+
+3. Deploy para producao:
+
+```bash
+npm run deploy:cf
+```
+
+Configuracao usada: `wrangler.jsonc` com `assets.directory = ./dist`.
+
+## Alternativa: Cloudflare Pages
+
+No projeto Pages, use:
 
 - Framework preset: `None`
 - Build command: `npm run build`
