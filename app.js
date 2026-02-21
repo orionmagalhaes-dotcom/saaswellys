@@ -1004,17 +1004,11 @@
 
   function renderLoginInstallSection() {
     const installed = uiState.pwaInstalled || isStandaloneMode();
-    if (installed) {
-      return `
-        <div class="login-install-box">
-          <p class="note">Aplicativo ja instalado neste dispositivo.</p>
-        </div>
-      `;
-    }
-
-    const hint = uiState.deferredPrompt
-      ? "Toque no botao para instalar o app em tela cheia com melhor desempenho e cache offline."
-      : manualInstallInstructions();
+    const hint = installed
+      ? "Aplicativo ja instalado. Toque em 'Instalar no celular' para verificar e aplicar atualizacao."
+      : uiState.deferredPrompt
+        ? "Toque no botao para instalar o app em tela cheia com melhor desempenho e cache offline."
+        : manualInstallInstructions();
     return `
       <div class="login-install-box">
         <button class="btn install-cta" type="button" data-action="install-pwa">Instalar no celular</button>
@@ -1027,6 +1021,19 @@
     if (uiState.pwaInstalled || isStandaloneMode()) {
       markPwaInstalled(true);
       uiState.deferredPrompt = null;
+      if ("serviceWorker" in navigator) {
+        try {
+          const registration = pwaCtx.registration || (await navigator.serviceWorker.getRegistration()) || null;
+          if (registration) {
+            bindPwaRegistration(registration);
+            if (registration.waiting) {
+              registration.waiting.postMessage({ type: "SKIP_WAITING" });
+            } else {
+              registration.update().catch(() => {});
+            }
+          }
+        } catch (_err) {}
+      }
       render();
       return;
     }
