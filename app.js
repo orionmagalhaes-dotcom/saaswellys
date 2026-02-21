@@ -34,6 +34,11 @@
   const SUPABASE_PUBLISHABLE_KEY = "sb_publishable_hrVkbcMHzu04NcpSvttgrw_VIiVctr-";
   const SUPABASE_PROJECT_ID = "fquiicsdvjqzrbeiuaxo";
   const PWA_INSTALLED_KEY = "restobar_pwa_installed";
+  const SUPABASE_SYNC_DEBOUNCE_MS = 400;
+  const SUPABASE_PULL_DEBOUNCE_MS = 220;
+  const SUPABASE_SYNC_RETRY_BASE_MS = 1000;
+  const SUPABASE_RECONNECT_BASE_MS = 900;
+  const SUPABASE_RECONNECT_MAX_MS = 30000;
 
   const app = document.getElementById("app");
   const uiState = {
@@ -56,7 +61,9 @@
     supabaseLastError: "",
     pwaInstalled: false,
     pwaUpdateReady: false,
-    remoteMonitorEvents: []
+    remoteMonitorEvents: [],
+    waiterKitchenNotifications: [],
+    waiterKitchenNotificationOpen: false
   };
   const pwaCtx = {
     registration: null,
@@ -342,18 +349,61 @@
   let state = loadState();
   let sessionUserId = loadSessionUserId(state.session?.userId || null);
   state.session = { userId: null };
+  let lastMetaUpdatedMs = new Date(state.meta?.updatedAt || 0).getTime();
+  if (!Number.isFinite(lastMetaUpdatedMs)) {
+    lastMetaUpdatedMs = Date.now();
+  }
+
+  function nextStateUpdatedAt() {
+    const nowMs = Date.now();
+    const nextMs = Math.max(nowMs, lastMetaUpdatedMs + 1);
+    lastMetaUpdatedMs = nextMs;
+    return new Date(nextMs).toISOString();
+  }
+
+  function createRuntimeClientId() {
+    if (window.crypto && typeof window.crypto.randomUUID === "function") {
+      return window.crypto.randomUUID();
+    }
+    return `rt-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+  }
+
   const supabaseCtx = {
     client: null,
     channel: null,
     connected: false,
+    connecting: false,
     syncTimer: null,
-    syncInFlight: false
+    syncInFlight: false,
+    syncPending: false,
+    syncFailures: 0,
+    pullTimer: null,
+    pullInFlight: false,
+    pullQueued: false,
+    reconnectTimer: null,
+    reconnectAttempt: 0,
+    monitorRenderTimer: null,
+    waiterNotificationRenderTimer: null,
+    clientRuntimeId: createRuntimeClientId()
+  };
+  const kitchenNoticeCtx = {
+    seenAuditIds: new Set(
+      (state.auditLog || [])
+        .filter((entry) => entry && entry.type === "cozinha_status")
+        .map((entry) => String(entry.id || ""))
+        .filter(Boolean)
+    )
   };
 
   function adoptIncomingState(source) {
     const currentSession = sessionUserId;
     state = normalizeStateShape(source);
     state.session = { userId: null };
+    syncWaiterKitchenNotificationsFromAudit();
+    const adoptedUpdatedMs = new Date(state.meta?.updatedAt || 0).getTime();
+    if (Number.isFinite(adoptedUpdatedMs)) {
+      lastMetaUpdatedMs = Math.max(lastMetaUpdatedMs, adoptedUpdatedMs);
+    }
     sessionUserId = currentSession;
     persistSessionUserId(sessionUserId);
   }
@@ -362,7 +412,7 @@
     const touchMeta = options.touchMeta !== false;
     state.meta = state.meta || {};
     if (touchMeta) {
-      state.meta.updatedAt = isoNow();
+      state.meta.updatedAt = nextStateUpdatedAt();
     }
     state.session = { userId: null };
     pruneHistory(state);
@@ -400,18 +450,139 @@
     return supabaseCtx.client;
   }
 
-  function scheduleSupabaseSync() {
+  function isOffline() {
+    return typeof navigator !== "undefined" && navigator.onLine === false;
+  }
+
+  function scheduleSupabaseSync(delayMs = SUPABASE_SYNC_DEBOUNCE_MS) {
     if (supabaseCtx.syncTimer) {
       clearTimeout(supabaseCtx.syncTimer);
     }
+    const waitMs = Math.max(0, Number(delayMs) || 0);
     supabaseCtx.syncTimer = setTimeout(() => {
+      supabaseCtx.syncTimer = null;
       void syncStateToSupabase();
-    }, 400);
+    }, waitMs);
+  }
+
+  function scheduleSupabasePull(delayMs = SUPABASE_PULL_DEBOUNCE_MS) {
+    if (supabaseCtx.pullTimer) {
+      clearTimeout(supabaseCtx.pullTimer);
+    }
+    const waitMs = Math.max(0, Number(delayMs) || 0);
+    supabaseCtx.pullTimer = setTimeout(() => {
+      supabaseCtx.pullTimer = null;
+      void pullStateFromSupabase();
+    }, waitMs);
+  }
+
+  function scheduleAdminMonitorRender() {
+    if (supabaseCtx.monitorRenderTimer) return;
+    supabaseCtx.monitorRenderTimer = setTimeout(() => {
+      supabaseCtx.monitorRenderTimer = null;
+      const user = getCurrentUser();
+      if (user?.role === "admin" && uiState.adminTab === "monitor") {
+        render();
+      }
+    }, 120);
+  }
+
+  function scheduleWaiterNotificationRender() {
+    if (supabaseCtx.waiterNotificationRenderTimer) return;
+    supabaseCtx.waiterNotificationRenderTimer = setTimeout(() => {
+      supabaseCtx.waiterNotificationRenderTimer = null;
+      const user = getCurrentUser();
+      if (user?.role === "waiter" && uiState.waiterKitchenNotificationOpen) {
+        render();
+      }
+    }, 120);
+  }
+
+  function isKitchenUpdateAuditEvent(entry) {
+    return Boolean(entry) && entry.type === "cozinha_status" && Boolean(entry.id);
+  }
+
+  function pruneKitchenNotificationSeenIds() {
+    if (kitchenNoticeCtx.seenAuditIds.size <= 15000) return;
+    const keep = new Set(
+      (state.auditLog || [])
+        .filter((entry) => isKitchenUpdateAuditEvent(entry))
+        .slice(0, 2200)
+        .map((entry) => String(entry.id || ""))
+        .filter(Boolean)
+    );
+    for (const notification of uiState.waiterKitchenNotifications || []) {
+      const id = String(notification.auditId || "");
+      if (id) keep.add(id);
+    }
+    kitchenNoticeCtx.seenAuditIds = keep;
+  }
+
+  function enqueueWaiterKitchenNotification(entry) {
+    if (!isKitchenUpdateAuditEvent(entry)) return false;
+    const entryId = String(entry.id || "");
+    if (!entryId || kitchenNoticeCtx.seenAuditIds.has(entryId)) return false;
+    kitchenNoticeCtx.seenAuditIds.add(entryId);
+    pruneKitchenNotificationSeenIds();
+
+    const user = getCurrentUser();
+    if (!user || user.role !== "waiter") return false;
+
+    const notification = {
+      id: `WN-${entryId}`,
+      auditId: entryId,
+      comandaId: String(entry.comandaId || ""),
+      actorName: entry.actorName || "Cozinha",
+      detail: entry.detail || "Atualizacao de pedido recebida da cozinha.",
+      ts: entry.ts || isoNow()
+    };
+    uiState.waiterKitchenNotifications.unshift(notification);
+    if (uiState.waiterKitchenNotifications.length > 20) {
+      uiState.waiterKitchenNotifications = uiState.waiterKitchenNotifications.slice(0, 20);
+    }
+    uiState.waiterKitchenNotificationOpen = true;
+    return true;
+  }
+
+  function syncWaiterKitchenNotificationsFromAudit() {
+    const rows = state.auditLog || [];
+    const windowSize = Math.min(rows.length, 450);
+    for (let idx = windowSize - 1; idx >= 0; idx -= 1) {
+      enqueueWaiterKitchenNotification(rows[idx]);
+    }
+  }
+
+  function scheduleSupabaseReconnect(_reason = "retry", delayMs = null) {
+    if (supabaseCtx.reconnectTimer) return;
+    if (isOffline()) {
+      setSupabaseStatus("offline", "Sem internet para realtime.");
+      return;
+    }
+    supabaseCtx.reconnectAttempt = Math.min(supabaseCtx.reconnectAttempt + 1, 10);
+    const backoffMs = Math.min(
+      SUPABASE_RECONNECT_MAX_MS,
+      SUPABASE_RECONNECT_BASE_MS * Math.pow(2, Math.max(0, supabaseCtx.reconnectAttempt - 1))
+    );
+    const waitMs = Number.isFinite(Number(delayMs)) ? Math.max(300, Number(delayMs)) : backoffMs;
+    supabaseCtx.reconnectTimer = setTimeout(() => {
+      supabaseCtx.reconnectTimer = null;
+      void connectSupabase();
+    }, waitMs);
   }
 
   async function syncStateToSupabase() {
+    if (supabaseCtx.syncInFlight) {
+      supabaseCtx.syncPending = true;
+      return;
+    }
+    if (isOffline()) {
+      setSupabaseStatus("offline", "Sem internet para sincronizar.");
+      supabaseCtx.syncPending = true;
+      return;
+    }
+
     const client = getSupabaseClient();
-    if (!client || supabaseCtx.syncInFlight) return;
+    if (!client) return;
 
     supabaseCtx.syncInFlight = true;
     try {
@@ -424,35 +595,72 @@
       if (error) {
         throw error;
       }
+      supabaseCtx.syncFailures = 0;
       state.meta.lastCloudSyncAt = isoNow();
       localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
       setSupabaseStatus("conectado");
     } catch (err) {
+      supabaseCtx.syncFailures = Math.min(supabaseCtx.syncFailures + 1, 8);
+      const retryMs = Math.min(
+        SUPABASE_RECONNECT_MAX_MS,
+        SUPABASE_SYNC_RETRY_BASE_MS * Math.pow(2, Math.max(0, supabaseCtx.syncFailures - 1))
+      );
       setSupabaseStatus("aviso", String(err?.message || err || "Falha ao sincronizar."));
+      scheduleSupabaseSync(retryMs);
+      scheduleSupabaseReconnect("sync_error", retryMs);
     } finally {
       supabaseCtx.syncInFlight = false;
+      if (supabaseCtx.syncPending) {
+        supabaseCtx.syncPending = false;
+        scheduleSupabaseSync(120);
+      }
     }
   }
 
   async function pullStateFromSupabase() {
-    const client = getSupabaseClient();
-    if (!client) return;
+    if (supabaseCtx.pullInFlight) {
+      supabaseCtx.pullQueued = true;
+      return false;
+    }
+    if (isOffline()) {
+      setSupabaseStatus("offline", "Sem internet para atualizar.");
+      return false;
+    }
 
+    const client = getSupabaseClient();
+    if (!client) return false;
+
+    supabaseCtx.pullInFlight = true;
     try {
       const { data, error } = await client.from("restobar_state").select("payload,updated_at").eq("id", "main").maybeSingle();
-      if (error || !data?.payload) return;
+      if (error) {
+        throw error;
+      }
+      if (!data?.payload) {
+        setSupabaseStatus("conectado");
+        return true;
+      }
 
       const localUpdated = new Date(state.meta?.updatedAt || 0).getTime();
       const remoteUpdated = new Date(data.payload?.meta?.updatedAt || data.updated_at || 0).getTime();
-      if (Number.isFinite(remoteUpdated) && remoteUpdated > localUpdated) {
+      if (Number.isFinite(remoteUpdated) && (!Number.isFinite(localUpdated) || remoteUpdated > localUpdated)) {
         adoptIncomingState(data.payload);
         state.meta.lastCloudSyncAt = isoNow();
         saveState({ skipCloud: true, touchMeta: false });
         render();
       }
       setSupabaseStatus("conectado");
+      return true;
     } catch (err) {
       setSupabaseStatus("aviso", String(err?.message || err || "Falha ao ler cloud."));
+      scheduleSupabaseReconnect("pull_error");
+      return false;
+    } finally {
+      supabaseCtx.pullInFlight = false;
+      if (supabaseCtx.pullQueued) {
+        supabaseCtx.pullQueued = false;
+        scheduleSupabasePull(150);
+      }
     }
   }
 
@@ -473,49 +681,88 @@
     supabaseCtx.channel.send({
       type: "broadcast",
       event: "state_changed",
-      payload: { updatedAt: state.meta?.updatedAt || isoNow(), actorName: entry.actorName }
+      payload: {
+        updatedAt: state.meta?.updatedAt || isoNow(),
+        actorName: entry.actorName,
+        origin: supabaseCtx.clientRuntimeId
+      }
     }).catch(() => {});
   }
 
   async function connectSupabase() {
+    if (supabaseCtx.connecting) return;
     const client = getSupabaseClient();
     if (!client) return;
-
-    setSupabaseStatus("conectando");
-    if (supabaseCtx.channel) {
-      try {
-        await supabaseCtx.channel.unsubscribe();
-      } catch (_err) {}
+    if (isOffline()) {
+      setSupabaseStatus("offline", "Sem internet para conectar realtime.");
+      return;
     }
 
-    const channel = client.channel("restobar-live", { config: { broadcast: { self: false } } });
-    channel
-      .on("broadcast", { event: "audit_event" }, (message) => {
-        if (message?.payload) {
-          pushRemoteMonitorEvent(message.payload);
-          const user = getCurrentUser();
-          if (user?.role === "admin" && uiState.adminTab === "monitor") {
-            render();
+    supabaseCtx.connecting = true;
+    supabaseCtx.connected = false;
+    setSupabaseStatus("conectando");
+    if (supabaseCtx.reconnectTimer) {
+      clearTimeout(supabaseCtx.reconnectTimer);
+      supabaseCtx.reconnectTimer = null;
+    }
+
+    try {
+      if (supabaseCtx.channel) {
+        try {
+          await supabaseCtx.channel.unsubscribe();
+        } catch (_err) {}
+      }
+
+      const channel = client.channel("restobar-live", { config: { broadcast: { self: false } } });
+      channel
+        .on("broadcast", { event: "audit_event" }, (message) => {
+          if (message?.payload) {
+            pushRemoteMonitorEvent(message.payload);
+            if (enqueueWaiterKitchenNotification(message.payload)) {
+              scheduleWaiterNotificationRender();
+            }
+            scheduleAdminMonitorRender();
           }
+        })
+        .on("broadcast", { event: "state_changed" }, (message) => {
+          const payload = message?.payload || {};
+          if (payload.origin && payload.origin === supabaseCtx.clientRuntimeId) return;
+          const localUpdated = new Date(state.meta?.updatedAt || 0).getTime();
+          const remoteUpdated = new Date(payload.updatedAt || 0).getTime();
+          if (Number.isFinite(remoteUpdated) && Number.isFinite(localUpdated) && remoteUpdated <= localUpdated) {
+            return;
+          }
+          scheduleSupabasePull(120);
+        });
+
+      channel.subscribe((status) => {
+        if (status === "SUBSCRIBED") {
+          supabaseCtx.connected = true;
+          supabaseCtx.reconnectAttempt = 0;
+          setSupabaseStatus("conectado");
+          scheduleSupabasePull(80);
+        } else if (status === "CHANNEL_ERROR" || status === "TIMED_OUT" || status === "CLOSED") {
+          supabaseCtx.connected = false;
+          setSupabaseStatus("aviso", `Realtime: ${status}`);
+          scheduleSupabaseReconnect(status);
         }
-      })
-      .on("broadcast", { event: "state_changed" }, () => {
-        void pullStateFromSupabase();
       });
 
-    channel.subscribe((status) => {
-      if (status === "SUBSCRIBED") {
-        supabaseCtx.connected = true;
-        setSupabaseStatus("conectado");
-      } else if (status === "CHANNEL_ERROR" || status === "TIMED_OUT" || status === "CLOSED") {
-        supabaseCtx.connected = false;
-        setSupabaseStatus("aviso", `Realtime: ${status}`);
+      supabaseCtx.channel = channel;
+      const pulledOk = await pullStateFromSupabase();
+      if (pulledOk) {
+        const localUpdated = new Date(state.meta?.updatedAt || 0).getTime();
+        const lastCloudSync = new Date(state.meta?.lastCloudSyncAt || 0).getTime();
+        if (Number.isFinite(localUpdated) && (!Number.isFinite(lastCloudSync) || localUpdated > lastCloudSync)) {
+          scheduleSupabaseSync(650);
+        }
       }
-    });
-
-    supabaseCtx.channel = channel;
-    await pullStateFromSupabase();
-    scheduleSupabaseSync();
+    } catch (err) {
+      setSupabaseStatus("aviso", String(err?.message || err || "Falha ao conectar realtime."));
+      scheduleSupabaseReconnect("connect_error");
+    } finally {
+      supabaseCtx.connecting = false;
+    }
   }
 
   function getCurrentUser() {
@@ -587,6 +834,13 @@
     if (item.needsKitchen !== undefined) return Boolean(item.needsKitchen);
     if (item.category === "Cozinha") return true;
     return item.category === "Ofertas" && Boolean(item.requiresKitchen);
+  }
+
+  function isRecentComandaItem(item, windowMs = 5 * 60 * 1000) {
+    if (!item || !item.createdAt) return false;
+    const createdAtMs = new Date(item.createdAt).getTime();
+    if (!Number.isFinite(createdAtMs)) return false;
+    return Date.now() - createdAtMs <= windowMs;
   }
 
   function listPendingKitchenItems() {
@@ -1704,7 +1958,7 @@
             ? `<div class="card">
           <h3>Comanda ativa agora: ${esc(activeComanda.id)}</h3>
           <p class="note">Adicione pedidos, acompanhe a cozinha e finalize quando necessario.</p>
-          <div style="margin-top:0.75rem;">${renderComandaCard(activeComanda, { forceExpanded: true })}</div>
+          <div style="margin-top:0.75rem;">${renderComandaCard(activeComanda)}</div>
         </div>`
             : `<div class="card">
           <h3>Resumo rapido</h3>
@@ -1794,7 +2048,9 @@
   }
 
   function renderItemRow(comanda, item) {
+    const isRecent = isRecentComandaItem(item);
     const flags = [];
+    if (isRecent) flags.push('<span class="tag tag-new-item">Novo</span>');
     if (item.canceled) flags.push('<span class="tag">Cancelado</span>');
     if (item.delivered) flags.push('<span class="tag">Entregue</span>');
     if (item.deliveryRequested) flags.push('<span class="tag">Entrega</span>');
@@ -1808,7 +2064,7 @@
     }
 
     return `
-      <div class="item-row">
+      <div class="item-row ${isRecent ? "is-new" : ""}">
         <div><b>${esc(item.name)}</b> x${item.qty} | ${money(item.priceAtSale)} un | Subtotal ${money(Number(item.qty) * Number(item.priceAtSale || 0))}</div>
         <div class="note">Categoria: ${esc(item.category)} | Criado em: ${formatDateTime(item.createdAt)}</div>
         ${item.waiterNote ? `<div class="note">Obs: ${esc(item.waiterNote)}</div>` : ""}
@@ -2178,6 +2434,42 @@
     `;
   }
 
+  function renderWaiterKitchenNotificationModal() {
+    if (!uiState.waiterKitchenNotificationOpen || !uiState.waiterKitchenNotifications.length) return "";
+    return `
+      <div class="waiter-notify-backdrop" data-action="close-waiter-kitchen-notifications"></div>
+      <div class="waiter-notify-modal" role="dialog" aria-modal="true" aria-label="Atualizacoes da cozinha">
+        <div class="waiter-notify-header">
+          <h3>Atualizacoes da Cozinha</h3>
+          <div class="actions">
+            <button class="btn secondary compact-action" data-action="clear-waiter-kitchen-notifications">Limpar</button>
+            <button class="btn secondary compact-action" data-action="close-waiter-kitchen-notifications">Fechar</button>
+          </div>
+        </div>
+        <div class="waiter-notify-list">
+          ${uiState.waiterKitchenNotifications
+            .map(
+              (entry) => `
+            <div class="waiter-notify-item">
+              <div><b>${esc(entry.comandaId || "-")}</b> | ${formatDateTime(entry.ts)} | ${esc(entry.actorName || "Cozinha")}</div>
+              <div class="note">${esc(entry.detail)}</div>
+              <div class="actions">
+                ${
+                  entry.comandaId
+                    ? `<button class="btn primary compact-action" data-action="open-kitchen-notification-comanda" data-comanda-id="${esc(entry.comandaId)}" data-id="${esc(entry.id)}">Abrir comanda</button>`
+                    : ""
+                }
+                <button class="btn secondary compact-action" data-action="dismiss-waiter-kitchen-notification" data-id="${esc(entry.id)}">Dispensar</button>
+              </div>
+            </div>
+          `
+            )
+            .join("")}
+        </div>
+      </div>
+    `;
+  }
+
   function renderWaiter(user) {
     const tabs = [
       { key: "abrir", label: "Abrir pedido/comanda" },
@@ -2218,6 +2510,7 @@
         ${renderTopBar(user)}
         ${renderTabs("waiter", tabs, uiState.waiterTab)}
         ${content}
+        ${renderWaiterKitchenNotificationModal()}
       </div>
     `;
   }
@@ -2537,6 +2830,8 @@
     sessionUserId = null;
     persistSessionUserId(null);
     uiState.waiterActiveComandaId = null;
+    uiState.waiterKitchenNotifications = [];
+    uiState.waiterKitchenNotificationOpen = false;
     saveState({ skipCloud: true, touchMeta: false });
     render();
   }
@@ -3359,7 +3654,7 @@
     const fiadoCustomer = form.fiadoCustomer.value.trim();
     const total = comandaTotal(comanda);
 
-    if (!manualCheck) {
+    if (paymentMethod !== "fiado" && !manualCheck) {
       alert("Confirme manualmente o pagamento antes de finalizar.");
       return;
     }
@@ -3639,7 +3934,16 @@
       const role = button.dataset.role;
       const tab = button.dataset.tab;
       if (role === "admin") uiState.adminTab = tab;
-      if (role === "waiter") uiState.waiterTab = tab;
+      if (role === "waiter") {
+        uiState.waiterTab = tab;
+        if (tab === "abertas") {
+          for (const comanda of state.openComandas) {
+            const key = String(comanda.id || "");
+            uiState.waiterCollapsedByComanda[key] = true;
+            delete uiState.finalizeOpenByComanda[key];
+          }
+        }
+      }
       if (role === "cook") uiState.cookTab = tab;
       render();
       return;
@@ -3732,6 +4036,48 @@
 
     if (action === "print-comanda") {
       printComanda(button.dataset.comandaId);
+      return;
+    }
+
+    if (action === "close-waiter-kitchen-notifications") {
+      uiState.waiterKitchenNotificationOpen = false;
+      render();
+      return;
+    }
+
+    if (action === "clear-waiter-kitchen-notifications") {
+      uiState.waiterKitchenNotifications = [];
+      uiState.waiterKitchenNotificationOpen = false;
+      render();
+      return;
+    }
+
+    if (action === "dismiss-waiter-kitchen-notification") {
+      const notificationId = String(button.dataset.id || "");
+      uiState.waiterKitchenNotifications = uiState.waiterKitchenNotifications.filter((n) => n.id !== notificationId);
+      if (!uiState.waiterKitchenNotifications.length) {
+        uiState.waiterKitchenNotificationOpen = false;
+      }
+      render();
+      return;
+    }
+
+    if (action === "open-kitchen-notification-comanda") {
+      const notificationId = String(button.dataset.id || "");
+      const comandaId = String(button.dataset.comandaId || "");
+      uiState.waiterKitchenNotifications = uiState.waiterKitchenNotifications.filter((n) => n.id !== notificationId);
+      uiState.waiterKitchenNotificationOpen = false;
+      if (comandaId) {
+        uiState.waiterTab = "abertas";
+        for (const comanda of state.openComandas) {
+          const key = String(comanda.id || "");
+          uiState.waiterCollapsedByComanda[key] = true;
+          delete uiState.finalizeOpenByComanda[key];
+        }
+        uiState.waiterCollapsedByComanda[comandaId] = false;
+        uiState.waiterActiveComandaId = comandaId;
+      }
+      render();
       return;
     }
 
@@ -3936,6 +4282,32 @@
     } catch (_err) {}
   });
 
+  window.addEventListener("online", () => {
+    setSupabaseStatus("conectando");
+    if (supabaseCtx.syncPending) {
+      scheduleSupabaseSync(200);
+    }
+    scheduleSupabasePull(120);
+    void connectSupabase();
+  });
+
+  window.addEventListener("offline", () => {
+    setSupabaseStatus("offline", "Sem conexao com internet.");
+  });
+
+  document.addEventListener("visibilitychange", () => {
+    if (!document.hidden) {
+      scheduleSupabasePull(120);
+      if (!supabaseCtx.connected && !supabaseCtx.connecting) {
+        scheduleSupabaseReconnect("visibility_resume", 500);
+      }
+    }
+  });
+
+  window.addEventListener("focus", () => {
+    scheduleSupabasePull(150);
+  });
+
   window.addEventListener("beforeinstallprompt", (event) => {
     event.preventDefault();
     uiState.deferredPrompt = event;
@@ -3995,7 +4367,10 @@
   }, 5000);
 
   setInterval(() => {
-    void pullStateFromSupabase();
+    scheduleSupabasePull(0);
+    if (!supabaseCtx.connected && !supabaseCtx.connecting) {
+      scheduleSupabaseReconnect("heartbeat", 1200);
+    }
   }, 12000);
 
   void connectSupabase();
