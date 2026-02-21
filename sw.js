@@ -1,9 +1,10 @@
-const CACHE_VERSION = "v8";
+const CACHE_VERSION = "v9";
 const STATIC_CACHE = `restobar-static-${CACHE_VERSION}`;
 const RUNTIME_CACHE = `restobar-runtime-${CACHE_VERSION}`;
 
 const APP_SHELL = [
   "./",
+  "./?source=pwa",
   "./index.html",
   "./styles.css",
   "./app.js",
@@ -83,15 +84,15 @@ async function handleNavigationRequest(event) {
     cache.put(event.request, response.clone());
     return response;
   } catch (_err) {
-    const cachedPage = await caches.match(event.request);
+    const cachedPage = await caches.match(event.request, { ignoreSearch: true });
     if (cachedPage) return cachedPage;
-    return (await caches.match("./index.html")) || offlineResponse();
+    return (await caches.match("./?source=pwa")) || (await caches.match("./index.html")) || offlineResponse();
   }
 }
 
 async function staleWhileRevalidate(event) {
   const cache = await caches.open(STATIC_CACHE);
-  const cached = await cache.match(event.request);
+  const cached = await cache.match(event.request, { ignoreSearch: true });
   const networkPromise = fetch(event.request)
     .then((response) => {
       if (response.ok) {
@@ -120,10 +121,10 @@ async function networkFirst(request) {
     }
     return response;
   } catch (_err) {
-    const cached = await cache.match(request);
+    const cached = await cache.match(request, { ignoreSearch: true });
     if (cached) return cached;
     if (request.mode === "navigate") {
-      return (await caches.match("./index.html")) || offlineResponse();
+      return (await caches.match("./?source=pwa")) || (await caches.match("./index.html")) || offlineResponse();
     }
     return offlineResponse();
   }

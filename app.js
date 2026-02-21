@@ -63,7 +63,9 @@
     pwaUpdateReady: false,
     remoteMonitorEvents: [],
     waiterKitchenNotifications: [],
-    waiterKitchenNotificationOpen: false
+    waiterKitchenNotificationOpen: false,
+    waiterIncrementModalOpen: false,
+    waiterIncrementModalComandaId: null
   };
   const pwaCtx = {
     registration: null,
@@ -992,12 +994,33 @@
   function manualInstallInstructions() {
     const ua = String(navigator.userAgent || "");
     if (/iphone|ipad|ipod/i.test(ua)) {
-      return "No iPhone/iPad, toque em Compartilhar e depois em 'Adicionar a Tela de Inicio'.";
+      return "No iPhone/iPad (Safari), toque em Compartilhar, depois em 'Adicionar a Tela de Inicio' e confirme em 'Adicionar'.";
     }
     if (/android/i.test(ua)) {
-      return "No Android, abra o menu do navegador e toque em 'Instalar aplicativo' ou 'Adicionar a tela inicial'.";
+      return "No Android (Chrome/Edge), toque no menu do navegador e escolha 'Instalar aplicativo' ou 'Adicionar a tela inicial'.";
     }
     return "Abra o menu do navegador e selecione 'Instalar aplicativo'.";
+  }
+
+  function renderLoginInstallSection() {
+    const installed = uiState.pwaInstalled || isStandaloneMode();
+    if (installed) {
+      return `
+        <div class="login-install-box">
+          <p class="note">Aplicativo ja instalado neste dispositivo.</p>
+        </div>
+      `;
+    }
+
+    const hint = uiState.deferredPrompt
+      ? "Toque no botao para instalar o app em tela cheia com melhor desempenho e cache offline."
+      : manualInstallInstructions();
+    return `
+      <div class="login-install-box">
+        <button class="btn install-cta" type="button" data-action="install-pwa">Instalar no celular</button>
+        <p class="note" style="margin-top:0.45rem;">${esc(hint)}</p>
+      </div>
+    `;
   }
 
   async function handleInstallPwaAction() {
@@ -1123,7 +1146,7 @@
   function renderLogin() {
     app.innerHTML = `
       <div class="login-wrap">
-        ${renderInstallBanner()}
+        ${uiState.pwaUpdateReady ? renderInstallBanner() : ""}
         <div class="card login-card">
           <div class="login-brand">
             <img class="login-logo-subtle" src="./brand-login.png" alt="Logo ${esc(ESTABLISHMENT_NAME)}" />
@@ -1140,6 +1163,7 @@
             </div>
             <button class="btn primary" type="submit">Entrar</button>
           </form>
+          ${renderLoginInstallSection()}
         </div>
       </div>
     `;
@@ -2135,7 +2159,7 @@
         ${!isCollapsed && canResolveIndicator ? `<div class="actions indicator-actions"><button class="btn secondary" data-action="resolve-kitchen-indicator" data-comanda-id="${comanda.id}" data-mode="entendi">Entendi o alerta</button><button class="btn ok" data-action="resolve-kitchen-indicator" data-comanda-id="${comanda.id}" data-mode="entregue">Marcar como entregue</button></div>` : ""}
         ${
           !isCollapsed && editableItemsCount
-            ? `<div class="actions comanda-item-picker-actions"><button class="btn secondary compact-action" data-action="increment-item-picker" data-comanda-id="${comanda.id}">+1 em item da comanda</button><button class="btn danger compact-action" data-action="cancel-item-picker" data-comanda-id="${comanda.id}">Devolucao/cancelar item</button></div>`
+            ? `<div class="actions comanda-item-picker-actions"><button class="btn secondary compact-action" data-action="increment-item-picker" data-comanda-id="${comanda.id}">Adicionar itens da comanda</button><button class="btn danger compact-action" data-action="cancel-item-picker" data-comanda-id="${comanda.id}">Devolucao/cancelar item</button></div>`
             : ""
         }
 
@@ -2235,10 +2259,10 @@
           <h3>Fila de Espera - Cozinha</h3>
           <p class="note">Tempo medio atual: <b>${avg} min</b></p>
           ${queue.length
-            ? `<div class="table-wrap" style="margin-top:0.75rem;"><table class="responsive-stack waiter-kitchen-table"><thead><tr><th>Comanda</th><th>Produto</th><th>Qtd</th><th>Status Cozinha</th><th>Tempo restante</th><th>Mesa/ref</th></tr></thead><tbody>${queue
+            ? `<div class="table-wrap" style="margin-top:0.75rem;"><table class="responsive-stack waiter-kitchen-table"><thead><tr><th>Comanda</th><th>Produto</th><th>Qtd</th><th>Status Cozinha</th><th>Tempo restante</th><th>Mesa/ref</th><th>Acoes</th></tr></thead><tbody>${queue
                 .map(
                   (r) =>
-                    `<tr><td data-label="Comanda">${esc(r.comanda.id)}</td><td data-label="Produto">${esc(r.item.name)}</td><td data-label="Qtd">${r.item.qty}</td><td data-label="Status Cozinha"><span class="tag">${esc(kitchenStatusLabel(r.item.kitchenStatus || "fila"))}</span></td><td data-label="Tempo restante">${Math.ceil(r.remainingMs / 60000)} min</td><td data-label="Mesa/ref">${esc(r.comanda.table)}</td></tr>`
+                    `<tr><td data-label="Comanda">${esc(r.comanda.id)}</td><td data-label="Produto">${esc(r.item.name)}</td><td data-label="Qtd">${r.item.qty}</td><td data-label="Status Cozinha"><span class="tag">${esc(kitchenStatusLabel(r.item.kitchenStatus || "fila"))}</span></td><td data-label="Tempo restante">${Math.ceil(r.remainingMs / 60000)} min</td><td data-label="Mesa/ref">${esc(r.comanda.table)}</td><td data-label="Acoes"><div class="actions"><button class="btn secondary compact-action" data-action="cook-status" data-comanda-id="${r.comanda.id}" data-item-id="${r.item.id}" data-status="cozinhando">Cozinhando</button><button class="btn danger compact-action" data-action="cook-status" data-comanda-id="${r.comanda.id}" data-item-id="${r.item.id}" data-status="em_falta">Em falta</button><button class="btn ok compact-action" data-action="cook-status" data-comanda-id="${r.comanda.id}" data-item-id="${r.item.id}" data-status="entregue">Entregue</button></div></td></tr>`
                 )
                 .join("")}</tbody></table></div>`
             : `<div class="empty" style="margin-top:0.75rem;">Sem pedidos pendentes da cozinha.</div>`}
@@ -2470,6 +2494,82 @@
     `;
   }
 
+  function closeWaiterIncrementModal(shouldRender = true) {
+    uiState.waiterIncrementModalOpen = false;
+    uiState.waiterIncrementModalComandaId = null;
+    if (shouldRender) render();
+  }
+
+  function openWaiterIncrementModal(comandaId) {
+    const comanda = findOpenComanda(comandaId);
+    if (!comanda) return;
+    const candidates = (comanda.items || []).filter((item) => !item.canceled);
+    if (!candidates.length) {
+      alert("Nao ha itens validos nessa comanda.");
+      return;
+    }
+    uiState.waiterIncrementModalComandaId = comanda.id;
+    uiState.waiterIncrementModalOpen = true;
+    render();
+  }
+
+  function renderWaiterIncrementModal() {
+    if (!uiState.waiterIncrementModalOpen || !uiState.waiterIncrementModalComandaId) return "";
+    const comanda = findOpenComanda(uiState.waiterIncrementModalComandaId);
+    if (!comanda) {
+      uiState.waiterIncrementModalOpen = false;
+      uiState.waiterIncrementModalComandaId = null;
+      return "";
+    }
+
+    const candidates = (comanda.items || []).filter((item) => !item.canceled);
+    if (!candidates.length) {
+      return `
+        <div class="waiter-item-picker-backdrop" data-action="close-waiter-increment-modal"></div>
+        <div class="waiter-item-picker-modal" role="dialog" aria-modal="true" aria-label="Adicionar itens da comanda">
+          <h3>Adicionar itens da comanda</h3>
+          <div class="empty" style="margin-top:0.65rem;">Nao ha itens ativos nesta comanda.</div>
+          <div class="actions" style="margin-top:0.65rem;">
+            <button class="btn secondary" data-action="close-waiter-increment-modal">Fechar</button>
+          </div>
+        </div>
+      `;
+    }
+
+    return `
+      <div class="waiter-item-picker-backdrop" data-action="close-waiter-increment-modal"></div>
+      <div class="waiter-item-picker-modal" role="dialog" aria-modal="true" aria-label="Adicionar itens da comanda">
+        <h3>Adicionar itens da comanda</h3>
+        <p class="note">Comanda: <b>${esc(comanda.id)}</b> | Mesa/ref: ${esc(comanda.table || "-")}</p>
+        <form class="form compact" data-role="increment-item-form" data-comanda-id="${esc(comanda.id)}" style="margin-top:0.6rem;">
+          <div class="field">
+            <label>Item da comanda</label>
+            <select name="itemId" required>
+              ${candidates
+                .map((item) => {
+                  const product = state.products.find((p) => p.id === item.productId);
+                  const stock = product ? Number(product.stock || 0) : 0;
+                  const stockLabel = product ? ` | estoque ${stock}` : " | sem produto vinculado";
+                  const kitchenLabel = itemNeedsKitchen(item) ? ` [${kitchenStatusLabel(item.kitchenStatus || "fila")}]` : "";
+                  return `<option value="${esc(item.id)}">${esc(item.name)}${kitchenLabel} | atual ${item.qty}${stockLabel}</option>`;
+                })
+                .join("")}
+            </select>
+          </div>
+          <div class="field">
+            <label>Quantidade a adicionar</label>
+            <input name="qty" type="number" min="1" step="1" value="1" required />
+          </div>
+          <div class="note">A quantidade sera somada ao item escolhido e o estoque sera baixado automaticamente.</div>
+          <div class="actions" style="margin-top:0.6rem;">
+            <button class="btn secondary" type="button" data-action="close-waiter-increment-modal">Cancelar</button>
+            <button class="btn primary" type="submit">Adicionar</button>
+          </div>
+        </form>
+      </div>
+    `;
+  }
+
   function renderWaiter(user) {
     const tabs = [
       { key: "abrir", label: "Abrir pedido/comanda" },
@@ -2511,6 +2611,7 @@
         ${renderTabs("waiter", tabs, uiState.waiterTab)}
         ${content}
         ${renderWaiterKitchenNotificationModal()}
+        ${renderWaiterIncrementModal()}
       </div>
     `;
   }
@@ -3393,32 +3494,33 @@
     render();
   }
 
-  function incrementItem(comandaId, itemId) {
+  function incrementItem(comandaId, itemId, incrementQty = 1) {
     const actor = currentActor();
     const comanda = findOpenComanda(comandaId);
     if (!comanda) return;
 
     const item = (comanda.items || []).find((i) => i.id === itemId);
     if (!item || item.canceled) return;
+    const delta = Math.max(1, Math.floor(Number(incrementQty || 1)));
 
     const product = state.products.find((p) => p.id === item.productId);
     if (product && product.available === false) {
       alert(`Produto ${product.name} esta indisponivel no cardapio.`);
       return;
     }
-    if (!product || product.stock < 1) {
-      alert("Sem estoque para adicionar mais uma unidade.");
+    if (!product || product.stock < delta) {
+      alert(`Sem estoque para adicionar ${delta} unidade(s).`);
       return;
     }
 
-    product.stock -= 1;
-    item.qty = Number(item.qty || 0) + 1;
+    product.stock -= delta;
+    item.qty = Number(item.qty || 0) + delta;
     item.lastIncrementAt = isoNow();
 
     appendComandaEvent(comanda, {
       actor,
       type: "item_incrementado",
-      detail: `Item ${item.name} incrementado (+1). Nova quantidade: ${item.qty}.`,
+      detail: `Item ${item.name} incrementado (+${delta}). Nova quantidade: ${item.qty}.`,
       itemId: item.id
     });
 
@@ -3455,11 +3557,7 @@
   }
 
   function incrementItemPicker(comandaId) {
-    const comanda = findOpenComanda(comandaId);
-    if (!comanda) return;
-    const itemId = pickComandaItemByPrompt(comanda, "increment");
-    if (!itemId) return;
-    incrementItem(comandaId, itemId);
+    openWaiterIncrementModal(comandaId);
   }
 
   function cancelItemPicker(comandaId) {
@@ -3472,8 +3570,8 @@
 
   function setKitchenItemStatus(comandaId, itemId, status) {
     const actor = currentActor();
-    if (actor.role !== "cook" && actor.role !== "admin") {
-      alert("Apenas cozinheiro ou administrador podem alterar status da cozinha.");
+    if (!["cook", "waiter", "admin"].includes(actor.role)) {
+      alert("Apenas cozinheiro, garcom ou administrador podem alterar status da cozinha.");
       return;
     }
     const comanda = findOpenComanda(comandaId);
@@ -4009,6 +4107,11 @@
       return;
     }
 
+    if (action === "close-waiter-increment-modal") {
+      closeWaiterIncrementModal();
+      return;
+    }
+
     if (action === "cancel-item-picker") {
       cancelItemPicker(button.dataset.comandaId);
       return;
@@ -4126,6 +4229,23 @@
 
       if (form.id === "create-comanda-form") {
         createComanda(form);
+        return;
+      }
+
+      if (form.matches('form[data-role="increment-item-form"]')) {
+        const comandaId = String(form.dataset.comandaId || "");
+        const itemId = String(form.itemId?.value || "");
+        const qty = Number(form.qty?.value || 1);
+        if (!comandaId || !itemId) {
+          alert("Selecione um item valido.");
+          return;
+        }
+        if (!Number.isInteger(qty) || qty < 1) {
+          alert("Informe uma quantidade inteira maior ou igual a 1.");
+          return;
+        }
+        closeWaiterIncrementModal(false);
+        incrementItem(comandaId, itemId, qty);
         return;
       }
 

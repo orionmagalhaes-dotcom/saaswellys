@@ -30,6 +30,10 @@ body {
   overflow-x: hidden;
 }
 
+html {
+  -webkit-text-size-adjust: 100%;
+}
+
 body {
   margin: 0;
   color: var(--ink);
@@ -51,6 +55,7 @@ textarea {
 }
 
 .app-shell {
+  padding-top: max(0.25rem, env(safe-area-inset-top));
   padding-bottom: max(0.8rem, env(safe-area-inset-bottom));
 }
 
@@ -423,6 +428,16 @@ th {
   width: min(460px, 100%);
 }
 
+.login-install-box {
+  margin-top: 0.75rem;
+  padding-top: 0.65rem;
+  border-top: 1px solid #2b3750;
+}
+
+.login-install-box .btn {
+  width: 100%;
+}
+
 .login-brand {
   display: flex;
   flex-direction: column;
@@ -697,6 +712,33 @@ th {
   animation: waiter-notify-enter 0.2s ease-out;
 }
 
+.waiter-item-picker-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(2, 6, 12, 0.72);
+  z-index: 132;
+}
+
+.waiter-item-picker-modal {
+  position: fixed;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  width: min(460px, calc(100% - 0.8rem));
+  max-height: min(86vh, 620px);
+  background: linear-gradient(180deg, #101924 0%, #0e141e 100%);
+  border: 1px solid #2f5e92;
+  border-radius: 14px;
+  box-shadow: 0 24px 46px rgba(0, 0, 0, 0.48);
+  padding: 0.75rem;
+  z-index: 133;
+  overflow: auto;
+}
+
+.waiter-item-picker-modal .actions .btn {
+  flex: 1 1 calc(50% - 0.35rem);
+}
+
 @keyframes waiter-notify-enter {
   0% {
     opacity: 0;
@@ -739,7 +781,18 @@ th {
     margin: 0.45rem auto 0.95rem;
   }
 
+  .login-wrap {
+    padding-top: max(1rem, env(safe-area-inset-top));
+    padding-bottom: max(1rem, env(safe-area-inset-bottom));
+  }
+
   .waiter-notify-modal {
+    width: calc(100% - 0.5rem);
+    max-height: 88vh;
+    padding: 0.65rem;
+  }
+
+  .waiter-item-picker-modal {
     width: calc(100% - 0.5rem);
     max-height: 88vh;
     padding: 0.65rem;
