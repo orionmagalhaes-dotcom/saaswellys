@@ -4,7 +4,7 @@
 (() => {
   const STORAGE_KEY = "restobar_control_v1";
   const SESSION_KEY = "restobar_local_session_user";
-  const ESTABLISHMENT_NAME = "Brancao";
+  const ESTABLISHMENT_NAME = "BUTECO BURGUER";
   const CATEGORIES = ["Bar", "Cozinha", "Espetinhos", "Avulso", "Ofertas"];
   const BAR_SUBCATEGORIES = ["Doses/Copo", "Geral"];
   const KITCHEN_STATUSES = [
