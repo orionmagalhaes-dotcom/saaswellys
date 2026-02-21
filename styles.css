@@ -532,6 +532,30 @@ th {
   gap: 0.8rem;
 }
 
+.install-banner.is-update {
+  background: linear-gradient(160deg, #154025 0%, #133621 100%);
+  border-color: #2a7a49;
+}
+
+.install-banner p {
+  margin-top: 0.2rem;
+  color: #d2e7ff;
+}
+
+.install-banner-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 0.45rem;
+}
+
+.btn.install-cta {
+  background: linear-gradient(155deg, #2fb1ff 0%, #147bd4 100%);
+  border-color: #44c0ff;
+  color: #ffffff;
+  letter-spacing: 0.02em;
+}
+
 .empty {
   border: 1px dashed #3a4663;
   border-radius: 12px;
@@ -626,6 +650,19 @@ th {
   .container {
     width: calc(100% - 0.56rem);
     margin: 0.45rem auto 0.95rem;
+  }
+
+  .install-banner {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .install-banner-actions {
+    width: 100%;
+  }
+
+  .install-banner-actions .btn {
+    width: 100%;
   }
 
   .app-shell .topbar {

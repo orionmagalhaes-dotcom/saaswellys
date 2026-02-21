@@ -1,11 +1,18 @@
 {
   "name": "Brancao (Lanches, hamburgueres e petiscos)",
   "short_name": "Brancao",
-  "start_url": "./index.html",
+  "id": "./?source=pwa",
+  "start_url": "./?source=pwa",
+  "scope": "./",
   "display": "standalone",
+  "display_override": ["window-controls-overlay", "standalone"],
+  "orientation": "any",
   "background_color": "#000000",
   "theme_color": "#000000",
   "description": "Controle de restaurante/bar do Brancao com admin e garcom.",
+  "lang": "pt-BR",
+  "categories": ["food", "business", "productivity"],
+  "prefer_related_applications": false,
   "icons": [
     {
       "src": "./icon-192.png",
@@ -28,6 +35,26 @@
       "sizes": "512x512",
       "type": "image/png",
       "purpose": "maskable"
+    }
+  ],
+  "shortcuts": [
+    {
+      "name": "Abrir Comandas",
+      "short_name": "Comandas",
+      "description": "Acessa rapidamente a tela inicial de comandas.",
+      "url": "./#comandas"
+    },
+    {
+      "name": "Venda Avulsa",
+      "short_name": "Avulsa",
+      "description": "Acessa diretamente a rotina de venda avulsa.",
+      "url": "./#avulsa"
+    },
+    {
+      "name": "Monitor",
+      "short_name": "Monitor",
+      "description": "Abre o monitor operacional em tempo real.",
+      "url": "./#monitor"
     }
   ]
 }

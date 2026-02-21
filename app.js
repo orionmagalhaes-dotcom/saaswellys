@@ -33,6 +33,7 @@
     "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZxdWlpY3NkdmpxenJiZWl1YXhvIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzA5NDMxMDksImV4cCI6MjA4NjUxOTEwOX0.JYRxM0TJa1zEvqUPfMDWlCYnUfOlGR5oq7UoVaonL7w";
   const SUPABASE_PUBLISHABLE_KEY = "sb_publishable_hrVkbcMHzu04NcpSvttgrw_VIiVctr-";
   const SUPABASE_PROJECT_ID = "fquiicsdvjqzrbeiuaxo";
+  const PWA_INSTALLED_KEY = "restobar_pwa_installed";
 
   const app = document.getElementById("app");
   const uiState = {
@@ -53,8 +54,15 @@
     cookSearch: "",
     supabaseStatus: "desconectado",
     supabaseLastError: "",
+    pwaInstalled: false,
+    pwaUpdateReady: false,
     remoteMonitorEvents: []
   };
+  const pwaCtx = {
+    registration: null,
+    refreshing: false
+  };
+  uiState.pwaInstalled = checkPwaInstalledState();
 
   function isoNow() {
     return new Date().toISOString();
@@ -710,20 +718,117 @@
     }
   }
 
+  function isStandaloneMode() {
+    return window.matchMedia("(display-mode: standalone)").matches || window.navigator.standalone === true;
+  }
+
+  function checkPwaInstalledState() {
+    return isStandaloneMode() || localStorage.getItem(PWA_INSTALLED_KEY) === "1";
+  }
+
+  function markPwaInstalled(installed) {
+    uiState.pwaInstalled = Boolean(installed);
+    if (uiState.pwaInstalled) {
+      localStorage.setItem(PWA_INSTALLED_KEY, "1");
+    } else {
+      localStorage.removeItem(PWA_INSTALLED_KEY);
+    }
+  }
+
+  function manualInstallInstructions() {
+    const ua = String(navigator.userAgent || "");
+    if (/iphone|ipad|ipod/i.test(ua)) {
+      return "No iPhone/iPad, toque em Compartilhar e depois em 'Adicionar a Tela de Inicio'.";
+    }
+    if (/android/i.test(ua)) {
+      return "No Android, abra o menu do navegador e toque em 'Instalar aplicativo' ou 'Adicionar a tela inicial'.";
+    }
+    return "Abra o menu do navegador e selecione 'Instalar aplicativo'.";
+  }
+
+  async function handleInstallPwaAction() {
+    if (uiState.pwaInstalled || isStandaloneMode()) {
+      markPwaInstalled(true);
+      uiState.deferredPrompt = null;
+      render();
+      return;
+    }
+
+    if (uiState.deferredPrompt) {
+      const deferredPrompt = uiState.deferredPrompt;
+      deferredPrompt.prompt();
+      const choice = await deferredPrompt.userChoice.catch(() => null);
+      uiState.deferredPrompt = null;
+      if (choice?.outcome === "accepted") {
+        markPwaInstalled(true);
+      }
+      render();
+      return;
+    }
+
+    alert(manualInstallInstructions());
+  }
+
+  function requestPwaUpdate() {
+    if (pwaCtx.registration?.waiting) {
+      pwaCtx.registration.waiting.postMessage({ type: "SKIP_WAITING" });
+      return;
+    }
+    if (pwaCtx.registration) {
+      pwaCtx.registration.update().catch(() => {});
+    }
+  }
+
+  function bindPwaRegistration(registration) {
+    pwaCtx.registration = registration;
+
+    if (registration.waiting) {
+      uiState.pwaUpdateReady = true;
+      render();
+    }
+
+    registration.addEventListener("updatefound", () => {
+      const newWorker = registration.installing;
+      if (!newWorker) return;
+
+      newWorker.addEventListener("statechange", () => {
+        if (newWorker.state === "installed" && navigator.serviceWorker.controller) {
+          uiState.pwaUpdateReady = true;
+          render();
+        }
+      });
+    });
+  }
+
   function renderInstallBanner() {
-    const standalone =
-      window.matchMedia("(display-mode: standalone)").matches || window.navigator.standalone === true;
-    if (standalone) return "";
+    const installed = uiState.pwaInstalled || isStandaloneMode();
+    if (uiState.pwaUpdateReady) {
+      return `
+        <div class="install-banner is-update">
+          <div>
+            <b>Atualizacao disponivel</b>
+            <p>Uma nova versao do aplicativo foi baixada e esta pronta para uso.</p>
+          </div>
+          <div class="install-banner-actions">
+            <button class="btn primary" data-action="update-pwa">ATUALIZAR APLICATIVO</button>
+          </div>
+        </div>
+      `;
+    }
+    if (installed) return "";
+
     const installHint = uiState.deferredPrompt
-      ? "Versao para smartphone e desktop com atalho local."
-      : "Se o prompt nao abrir, use o menu do navegador e toque em Adicionar a tela inicial.";
+      ? "Instale para usar em tela cheia, com atalho local e melhor cache offline."
+      : manualInstallInstructions();
     return `
       <div class="install-banner">
         <div>
           <b>Instalar aplicativo</b>
           <p>${installHint}</p>
         </div>
-        <button class="btn secondary" data-action="install-pwa">instalar app</button>
+        <div class="install-banner-actions">
+          <button class="btn install-cta" data-action="install-pwa">INSTALAR APLICATIVO</button>
+        </div>
       </div>
     `;
   }
@@ -3521,14 +3626,12 @@
     }
 
     if (action === "install-pwa") {
-      if (uiState.deferredPrompt) {
-        uiState.deferredPrompt.prompt();
-        await uiState.deferredPrompt.userChoice;
-        uiState.deferredPrompt = null;
-        render();
-      } else {
-        alert("Abra o menu do navegador e selecione 'Adicionar a tela inicial' para instalar o app.");
-      }
+      await handleInstallPwaAction();
+      return;
+    }
+
+    if (action === "update-pwa") {
+      requestPwaUpdate();
       return;
     }
 
@@ -3836,17 +3939,45 @@
   window.addEventListener("beforeinstallprompt", (event) => {
     event.preventDefault();
     uiState.deferredPrompt = event;
-    render();
+    if (!uiState.pwaInstalled) {
+      render();
+    }
   });
 
   window.addEventListener("appinstalled", () => {
     uiState.deferredPrompt = null;
+    markPwaInstalled(true);
     render();
   });
 
+  const displayModeQuery = window.matchMedia("(display-mode: standalone)");
+  const onDisplayModeChange = () => {
+    markPwaInstalled(checkPwaInstalledState());
+    render();
+  };
+  if (typeof displayModeQuery.addEventListener === "function") {
+    displayModeQuery.addEventListener("change", onDisplayModeChange);
+  } else if (typeof displayModeQuery.addListener === "function") {
+    displayModeQuery.addListener(onDisplayModeChange);
+  }
+
   if ("serviceWorker" in navigator) {
+    navigator.serviceWorker.addEventListener("controllerchange", () => {
+      if (pwaCtx.refreshing) return;
+      pwaCtx.refreshing = true;
+      window.location.reload();
+    });
+
     window.addEventListener("load", () => {
-      navigator.serviceWorker.register("./sw.js").catch(() => {});
+      navigator.serviceWorker
+        .register("./sw.js")
+        .then((registration) => {
+          bindPwaRegistration(registration);
+          setInterval(() => {
+            registration.update().catch(() => {});
+          }, 90000);
+        })
+        .catch(() => {});
     });
   }
 
