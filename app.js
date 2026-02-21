@@ -711,14 +711,19 @@
   }
 
   function renderInstallBanner() {
-    if (!uiState.deferredPrompt) return "";
+    const standalone =
+      window.matchMedia("(display-mode: standalone)").matches || window.navigator.standalone === true;
+    if (standalone) return "";
+    const installHint = uiState.deferredPrompt
+      ? "Versao para smartphone e desktop com atalho local."
+      : "Se o prompt nao abrir, use o menu do navegador e toque em Adicionar a tela inicial.";
     return `
       <div class="install-banner">
         <div>
-          <b>Instalar PWA</b>
-          <p>Versao para smartphone e desktop com atalho local.</p>
+          <b>Instalar aplicativo</b>
+          <p>${installHint}</p>
         </div>
-        <button class="btn secondary" data-action="install-pwa">Instalar</button>
+        <button class="btn secondary" data-action="install-pwa">instalar app</button>
       </div>
     `;
   }
@@ -759,6 +764,7 @@
   function renderLogin() {
     app.innerHTML = `
       <div class="login-wrap">
+        ${renderInstallBanner()}
         <div class="card login-card">
           <div class="login-brand">
             <img class="login-logo-subtle" src="./brand-login.png" alt="Logo ${esc(ESTABLISHMENT_NAME)}" />
@@ -3520,6 +3526,8 @@
         await uiState.deferredPrompt.userChoice;
         uiState.deferredPrompt = null;
         render();
+      } else {
+        alert("Abra o menu do navegador e selecione 'Adicionar a tela inicial' para instalar o app.");
       }
       return;
     }
@@ -3828,6 +3836,11 @@
   window.addEventListener("beforeinstallprompt", (event) => {
     event.preventDefault();
     uiState.deferredPrompt = event;
+    render();
+  });
+
+  window.addEventListener("appinstalled", () => {
+    uiState.deferredPrompt = null;
     render();
   });
 
